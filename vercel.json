@@ -5,9 +5,5 @@
       "src": "package.json",
       "use": "@vercel/next"
     }
-  ],
-  "env": {
-    "SHOPIFY_SHOP_DOMAIN": "@shopify-shop-domain",
-    "SHOPIFY_ACCESS_TOKEN": "@shopify-access-token"
-  }
+  ]
 }

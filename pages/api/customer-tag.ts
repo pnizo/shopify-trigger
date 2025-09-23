@@ -53,6 +53,8 @@ export default async function handler(
 
     await axios.put(apiUrl, updatePayload, { headers });
 
+    await new Promise(resolve => setTimeout(resolve, 2000));
+
     const finalTags = existingTags.join(', ');
     const removePayload = {
       customer: {
@@ -62,6 +64,8 @@ export default async function handler(
     };
 
     await axios.put(apiUrl, removePayload, { headers });
+
+    await new Promise(resolve => setTimeout(resolve, 2000));
 
     return res.status(200).json({
       success: true,

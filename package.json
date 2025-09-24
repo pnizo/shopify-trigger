@@ -7,14 +7,17 @@
     "dev": "next dev",
     "build": "next build",
     "start": "next start",
-    "lint": "next lint"
+    "lint": "next lint",
+    "batch-tag": "node scripts/batch-customer-tag.js",
+    "batch-tag-debug": "node scripts/batch-customer-tag.js --debug"
   },
   "dependencies": {
     "next": "^14.0.0",
     "react": "^18.0.0",
     "react-dom": "^18.0.0",
     "@shopify/admin-api-client": "^1.0.0",
-    "axios": "^1.6.0"
+    "axios": "^1.6.0",
+    "dotenv": "^16.3.0"
   },
   "devDependencies": {
     "@types/node": "^20.0.0",

@@ -7,7 +7,7 @@ const SHOPIFY_SHOP_DOMAIN = process.env.SHOPIFY_SHOP_DOMAIN;
 const SHOPIFY_ACCESS_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN;
 const API_BASE_URL = 'https://shopify-trigger-tu1a.vercel.app';
 
-const BATCH_SIZE = 50;
+const BATCH_SIZE = 10;
 const DELAY_BETWEEN_BATCHES = 5000;
 
 if (!SHOPIFY_SHOP_DOMAIN || !SHOPIFY_ACCESS_TOKEN) {

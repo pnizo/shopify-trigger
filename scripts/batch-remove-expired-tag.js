@@ -30,8 +30,8 @@ const localApi = axios.create({
   },
 });
 
-async function fetchAllActiveCustomers() {
-  console.log('📋 Fetching active customers from Shopify...');
+async function fetchAllCustomersWithFWJTag() {
+  console.log('📋 Fetching customers with "FWJカード会員" tag from Shopify...');
 
   let allCustomers = [];
   let nextPageInfo = null;
@@ -55,13 +55,15 @@ async function fetchAllActiveCustomers() {
       const response = await shopifyApi.get('/customers.json', { params });
       const customers = response.data.customers;
 
-      const activeCustomers = customers.filter(customer =>
-        customer.state === 'enabled'
-      );
+      // "FWJカード会員" タグを持つ顧客のみフィルタリング
+      const fwjCustomers = customers.filter(customer => {
+        const tags = customer.tags ? customer.tags.split(', ') : [];
+        return tags.includes('FWJカード会員');
+      });
 
-      allCustomers = allCustomers.concat(activeCustomers);
+      allCustomers = allCustomers.concat(fwjCustomers);
 
-      console.log(`   ✅ Found ${activeCustomers.length} active customers on page ${pageCount}`);
+      console.log(`   ✅ Found ${fwjCustomers.length} customers with "FWJカード会員" tag on page ${pageCount}`);
 
       const linkHeader = response.headers.link;
       nextPageInfo = extractNextPageInfo(linkHeader);
@@ -70,7 +72,7 @@ async function fetchAllActiveCustomers() {
 
     } while (nextPageInfo);
 
-    console.log(`\n✅ Total active customers found: ${allCustomers.length}`);
+    console.log(`\n✅ Total customers with "FWJカード会員" tag: ${allCustomers.length}`);
     return allCustomers;
 
   } catch (error) {
@@ -110,22 +112,30 @@ function displayCustomerInfo(customer, metafields = []) {
   if (metafields && metafields.length > 0) {
     console.log(`   🔧 Metafields:`);
     metafields.forEach(metafield => {
-      console.log(`      ${metafield.namespace}.${metafield.key}: ${metafield.value} (${metafield.value_type})`);
+      console.log(`      ${metafield.namespace}.${metafield.key}: ${metafield.value} (${metafield.type || metafield.value_type})`);
     });
+
+    // 特に fwj_effectivedate を強調表示
+    const fwjMetafield = metafields.find(m => m.namespace === 'custom' && m.key === 'fwj_effectivedate');
+    if (fwjMetafield) {
+      const effectiveDate = new Date(fwjMetafield.value);
+      const currentDate = new Date();
+      const isExpired = effectiveDate < currentDate;
+      console.log(`   📅 FWJ Effective Date: ${fwjMetafield.value} ${isExpired ? '🔴 EXPIRED' : '🟢 VALID'}`);
+    }
   } else {
     console.log(`   🔧 Metafields: None`);
   }
 }
 
-async function callCustomerTagApi(customerId, tag = 'batch-processed') {
+async function callRemoveExpiredTagApi(customerId) {
   try {
-    const response = await localApi.post('/api/customer-tag', {
-      customerId,
-      tag
+    const response = await localApi.post('/api/remove-expired-tag', {
+      customerId
     });
 
     return {
-      success: true,
+      success: response.data.success || response.data.tagRemoved,
       customerId,
       data: response.data
     };
@@ -133,12 +143,13 @@ async function callCustomerTagApi(customerId, tag = 'batch-processed') {
     return {
       success: false,
       customerId,
-      error: error.response?.data?.error || error.message
+      error: error.response?.data?.error || error.message,
+      data: error.response?.data
     };
   }
 }
 
-async function processBatch(customers, batchIndex, tag, debug = false) {
+async function processBatch(customers, batchIndex, debug = false) {
   console.log(`\n🔄 Processing batch ${batchIndex + 1} (${customers.length} customers)...`);
 
   if (debug) {
@@ -152,15 +163,26 @@ async function processBatch(customers, batchIndex, tag, debug = false) {
   }
 
   const promises = customers.map(customer =>
-    callCustomerTagApi(customer.id, tag)
+    callRemoveExpiredTagApi(customer.id)
   );
 
   const results = await Promise.all(promises);
 
-  const successful = results.filter(r => r.success);
-  const failed = results.filter(r => !r.success);
+  const tagRemoved = results.filter(r => r.success && r.data?.tagRemoved === true);
+  const notExpired = results.filter(r => !r.success && r.data?.message?.includes('has not passed yet'));
+  const tagNotFound = results.filter(r => !r.success && r.data?.message?.includes('not found on customer'));
+  const metafieldNotFound = results.filter(r => !r.success && r.data?.error?.includes('Metafield'));
+  const failed = results.filter(r =>
+    !r.success &&
+    !r.data?.message?.includes('has not passed yet') &&
+    !r.data?.message?.includes('not found on customer') &&
+    !r.data?.error?.includes('Metafield')
+  );
 
-  console.log(`   ✅ Successful: ${successful.length}`);
+  console.log(`   ✅ Tag Removed (Expired): ${tagRemoved.length}`);
+  console.log(`   🟢 Not Expired Yet: ${notExpired.length}`);
+  console.log(`   🟡 Tag Not Found: ${tagNotFound.length}`);
+  console.log(`   🟠 Metafield Not Found: ${metafieldNotFound.length}`);
   if (failed.length > 0) {
     console.log(`   ❌ Failed: ${failed.length}`);
     failed.forEach(failure => {
@@ -168,14 +190,13 @@ async function processBatch(customers, batchIndex, tag, debug = false) {
     });
   }
 
-  return { successful, failed };
+  return { tagRemoved, notExpired, tagNotFound, metafieldNotFound, failed };
 }
 
 async function main() {
-  const tag = process.argv[2] || 'batch-processed';
   const debugMode = process.argv.includes('--debug') || process.argv.includes('-d');
 
-  console.log(`🚀 Starting batch customer tag processing with tag: "${tag}"`);
+  console.log(`🚀 Starting batch expired tag removal processing`);
   console.log(`📡 API Base URL: ${API_BASE_URL}`);
   console.log(`🏪 Shopify Store: ${SHOPIFY_SHOP_DOMAIN}`);
   console.log(`📦 Batch Size: ${BATCH_SIZE}`);
@@ -183,10 +204,10 @@ async function main() {
   console.log(`🐛 Debug Mode: ${debugMode ? 'ON' : 'OFF'}\n`);
 
   try {
-    const customers = await fetchAllActiveCustomers();
+    const customers = await fetchAllCustomersWithFWJTag();
 
     if (customers.length === 0) {
-      console.log('ℹ️  No active customers found.');
+      console.log('ℹ️  No customers with "FWJカード会員" tag found.');
       return;
     }
 
@@ -197,17 +218,25 @@ async function main() {
 
     console.log(`\n📊 Processing ${customers.length} customers in ${batches.length} batches...\n`);
 
-    let totalSuccessful = 0;
+    let totalTagRemoved = 0;
+    let totalNotExpired = 0;
+    let totalTagNotFound = 0;
+    let totalMetafieldNotFound = 0;
     let totalFailed = 0;
     const allFailures = [];
+    const removedCustomers = [];
 
     for (let i = 0; i < batches.length; i++) {
       const batch = batches[i];
-      const results = await processBatch(batch, i, tag, debugMode);
+      const results = await processBatch(batch, i, debugMode);
 
-      totalSuccessful += results.successful.length;
+      totalTagRemoved += results.tagRemoved.length;
+      totalNotExpired += results.notExpired.length;
+      totalTagNotFound += results.tagNotFound.length;
+      totalMetafieldNotFound += results.metafieldNotFound.length;
       totalFailed += results.failed.length;
       allFailures.push(...results.failed);
+      removedCustomers.push(...results.tagRemoved);
 
       if (i < batches.length - 1) {
         console.log(`   ⏳ Waiting ${DELAY_BETWEEN_BATCHES}ms before next batch...`);
@@ -216,9 +245,19 @@ async function main() {
     }
 
     console.log(`\n📈 FINAL RESULTS:`);
-    console.log(`✅ Total Successful: ${totalSuccessful}`);
-    console.log(`❌ Total Failed: ${totalFailed}`);
-    console.log(`📊 Success Rate: ${((totalSuccessful / customers.length) * 100).toFixed(1)}%`);
+    console.log(`✅ Tags Removed (Expired): ${totalTagRemoved}`);
+    console.log(`🟢 Not Expired Yet: ${totalNotExpired}`);
+    console.log(`🟡 Tag Not Found: ${totalTagNotFound}`);
+    console.log(`🟠 Metafield Not Found: ${totalMetafieldNotFound}`);
+    console.log(`❌ Failed: ${totalFailed}`);
+    console.log(`📊 Total Processed: ${customers.length}`);
+
+    if (removedCustomers.length > 0) {
+      console.log(`\n✅ CUSTOMERS WITH TAG REMOVED:`);
+      removedCustomers.forEach(result => {
+        console.log(`   Customer ${result.customerId}: Expired on ${result.data.effectiveDate}`);
+      });
+    }
 
     if (allFailures.length > 0) {
       console.log(`\n❌ FAILED CUSTOMERS:`);

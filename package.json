@@ -9,7 +9,9 @@
     "start": "next start",
     "lint": "next lint",
     "batch-tag": "node scripts/batch-customer-tag.js",
-    "batch-tag-debug": "node scripts/batch-customer-tag.js --debug"
+    "batch-tag-debug": "node scripts/batch-customer-tag.js --debug",
+    "batch-remove-expired": "node scripts/batch-remove-expired-tag.js",
+    "batch-remove-expired-debug": "node scripts/batch-remove-expired-tag.js --debug"
   },
   "dependencies": {
     "next": "^14.0.0",

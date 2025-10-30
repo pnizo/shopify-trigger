@@ -55,7 +55,7 @@ export default async function handler(
     const metafields = metafieldsResponse.data.metafields;
 
     // 2秒待機（Shopify API制限対策）
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    await new Promise(resolve => setTimeout(resolve, 500));
 
     // 2. custom.fwj_effectivedate メタフィールドを検索
     const fwjEffectiveDateMetafield = metafields.find(
@@ -95,7 +95,7 @@ export default async function handler(
     const customer = customerResponse.data.customer;
 
     // 2秒待機
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    await new Promise(resolve => setTimeout(resolve, 500));
 
     // 6. タグから "FWJカード会員" を削除
     const existingTags = customer.tags ? customer.tags.split(', ') : [];
@@ -125,7 +125,7 @@ export default async function handler(
     await axios.put(customerUrl, updatePayload, { headers });
 
     // 2秒待機
-    await new Promise(resolve => setTimeout(resolve, 2000));
+    await new Promise(resolve => setTimeout(resolve, 500));
 
     return res.status(200).json({
       success: true,

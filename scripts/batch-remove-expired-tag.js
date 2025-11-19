@@ -21,6 +21,7 @@ const shopifyApi = axios.create({
     'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN,
     'Content-Type': 'application/json',
   },
+  timeout: 30000, // 30秒タイムアウト
 });
 
 const localApi = axios.create({
@@ -28,7 +29,41 @@ const localApi = axios.create({
   headers: {
     'Content-Type': 'application/json',
   },
+  timeout: 60000, // 60秒タイムアウト（API処理が長い可能性があるため）
 });
+
+// リトライ機能付きAPIリクエスト
+async function fetchWithRetry(apiCall, maxRetries = 3, retryDelay = 2000) {
+  let lastError;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await apiCall();
+    } catch (error) {
+      lastError = error;
+
+      // リトライ可能なエラーかチェック
+      const isRetryable =
+        error.code === 'ECONNRESET' ||
+        error.code === 'ETIMEDOUT' ||
+        error.code === 'ENOTFOUND' ||
+        error.code === 'ECONNREFUSED' ||
+        error.code === 'ENETUNREACH' ||
+        (error.response && error.response.status >= 500) ||
+        (!error.response && error.request); // リクエストは送信されたがレスポンスなし
+
+      if (!isRetryable || attempt === maxRetries) {
+        throw error;
+      }
+
+      console.warn(`   ⚠️  Request failed (attempt ${attempt}/${maxRetries}): ${error.message}`);
+      console.warn(`   🔄 Retrying in ${retryDelay}ms...`);
+      await new Promise(resolve => setTimeout(resolve, retryDelay));
+    }
+  }
+
+  throw lastError;
+}
 
 async function fetchAllCustomersWithFWJTag() {
   console.log('📋 Fetching customers with "FWJカード会員" tag from Shopify...');
@@ -52,8 +87,21 @@ async function fetchAllCustomersWithFWJTag() {
         params.page_info = nextPageInfo;
       }
 
-      const response = await shopifyApi.get('/customers.json', { params });
+      const response = await fetchWithRetry(() => shopifyApi.get('/customers.json', { params }));
       const customers = response.data.customers;
+
+      // デバッグ: 取得した全顧客の情報を表示
+      if (process.argv.includes('--verbose') || process.argv.includes('-v')) {
+        console.log(`\n   🔍 DEBUG: Total customers fetched on page ${pageCount}: ${customers.length}`);
+        customers.forEach((customer, index) => {
+          console.log(`   ${index + 1}. Customer ${customer.id} (${customer.email})`);
+          console.log(`      State: ${customer.state}`);
+          console.log(`      Tags: "${customer.tags}"`);
+          const tags = customer.tags ? customer.tags.split(', ') : [];
+          console.log(`      Tags Array: [${tags.map(t => `"${t}"`).join(', ')}]`);
+          console.log(`      Has FWJカード会員: ${tags.includes('FWJカード会員')}`);
+        });
+      }
 
       // "FWJカード会員" タグを持つ顧客のみフィルタリング
       const fwjCustomers = customers.filter(customer => {
@@ -63,7 +111,7 @@ async function fetchAllCustomersWithFWJTag() {
 
       allCustomers = allCustomers.concat(fwjCustomers);
 
-      console.log(`   ✅ Found ${fwjCustomers.length} customers with "FWJカード会員" tag on page ${pageCount}`);
+      console.log(`   ✅ Found ${fwjCustomers.length} customers with "FWJカード会員" tag on page ${pageCount} (out of ${customers.length} total)`);
 
       const linkHeader = response.headers.link;
       nextPageInfo = extractNextPageInfo(linkHeader);
@@ -76,7 +124,24 @@ async function fetchAllCustomersWithFWJTag() {
     return allCustomers;
 
   } catch (error) {
-    console.error('❌ Error fetching customers:', error.response?.data || error.message);
+    console.error('❌ Error fetching customers:');
+    console.error('   Error Type:', error.constructor.name);
+    console.error('   Error Message:', error.message);
+    if (error.code) console.error('   Error Code:', error.code);
+    if (error.response) {
+      console.error('   HTTP Status:', error.response.status);
+      console.error('   Response Data:', JSON.stringify(error.response.data, null, 2));
+      console.error('   Response Headers:', JSON.stringify(error.response.headers, null, 2));
+    }
+    if (error.request && !error.response) {
+      console.error('   No response received from server');
+      console.error('   Request details:', {
+        method: error.config?.method,
+        url: error.config?.url,
+        timeout: error.config?.timeout,
+      });
+    }
+    console.error('   Stack:', error.stack);
     throw error;
   }
 }
@@ -90,7 +155,7 @@ function extractNextPageInfo(linkHeader) {
 
 async function fetchCustomerMetafields(customerId) {
   try {
-    const response = await shopifyApi.get(`/customers/${customerId}/metafields.json`);
+    const response = await fetchWithRetry(() => shopifyApi.get(`/customers/${customerId}/metafields.json`));
     return response.data.metafields;
   } catch (error) {
     console.warn(`   ⚠️  Failed to fetch metafields for customer ${customerId}:`, error.response?.data?.error || error.message);
@@ -195,13 +260,15 @@ async function processBatch(customers, batchIndex, debug = false) {
 
 async function main() {
   const debugMode = process.argv.includes('--debug') || process.argv.includes('-d');
+  const verboseMode = process.argv.includes('--verbose') || process.argv.includes('-v');
 
   console.log(`🚀 Starting batch expired tag removal processing`);
   console.log(`📡 API Base URL: ${API_BASE_URL}`);
   console.log(`🏪 Shopify Store: ${SHOPIFY_SHOP_DOMAIN}`);
   console.log(`📦 Batch Size: ${BATCH_SIZE}`);
   console.log(`⏱️  Delay Between Batches: ${DELAY_BETWEEN_BATCHES}ms`);
-  console.log(`🐛 Debug Mode: ${debugMode ? 'ON' : 'OFF'}\n`);
+  console.log(`🐛 Debug Mode: ${debugMode ? 'ON' : 'OFF'}`);
+  console.log(`🔍 Verbose Mode: ${verboseMode ? 'ON' : 'OFF'}\n`);
 
   try {
     const customers = await fetchAllCustomersWithFWJTag();

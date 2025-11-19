@@ -21,6 +21,7 @@ const shopifyApi = axios.create({
     'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN,
     'Content-Type': 'application/json',
   },
+  timeout: 30000, // 30秒タイムアウト
 });
 
 const localApi = axios.create({
@@ -28,7 +29,41 @@ const localApi = axios.create({
   headers: {
     'Content-Type': 'application/json',
   },
+  timeout: 60000, // 60秒タイムアウト
 });
+
+// リトライ機能付きAPIリクエスト
+async function fetchWithRetry(apiCall, maxRetries = 3, retryDelay = 2000) {
+  let lastError;
+
+  for (let attempt = 1; attempt <= maxRetries; attempt++) {
+    try {
+      return await apiCall();
+    } catch (error) {
+      lastError = error;
+
+      // リトライ可能なエラーかチェック
+      const isRetryable =
+        error.code === 'ECONNRESET' ||
+        error.code === 'ETIMEDOUT' ||
+        error.code === 'ENOTFOUND' ||
+        error.code === 'ECONNREFUSED' ||
+        error.code === 'ENETUNREACH' ||
+        (error.response && error.response.status >= 500) ||
+        (!error.response && error.request);
+
+      if (!isRetryable || attempt === maxRetries) {
+        throw error;
+      }
+
+      console.warn(`   ⚠️  Request failed (attempt ${attempt}/${maxRetries}): ${error.message}`);
+      console.warn(`   🔄 Retrying in ${retryDelay}ms...`);
+      await new Promise(resolve => setTimeout(resolve, retryDelay));
+    }
+  }
+
+  throw lastError;
+}
 
 async function fetchAllActiveCustomers() {
   console.log('📋 Fetching active customers from Shopify...');
@@ -52,7 +87,7 @@ async function fetchAllActiveCustomers() {
         params.page_info = nextPageInfo;
       }
 
-      const response = await shopifyApi.get('/customers.json', { params });
+      const response = await fetchWithRetry(() => shopifyApi.get('/customers.json', { params }));
       const customers = response.data.customers;
 
       const activeCustomers = customers.filter(customer =>
@@ -74,7 +109,22 @@ async function fetchAllActiveCustomers() {
     return allCustomers;
 
   } catch (error) {
-    console.error('❌ Error fetching customers:', error.response?.data || error.message);
+    console.error('❌ Error fetching customers:');
+    console.error('   Error Type:', error.constructor.name);
+    console.error('   Error Message:', error.message);
+    if (error.code) console.error('   Error Code:', error.code);
+    if (error.response) {
+      console.error('   HTTP Status:', error.response.status);
+      console.error('   Response Data:', JSON.stringify(error.response.data, null, 2));
+    }
+    if (error.request && !error.response) {
+      console.error('   No response received from server');
+      console.error('   Request details:', {
+        method: error.config?.method,
+        url: error.config?.url,
+        timeout: error.config?.timeout,
+      });
+    }
     throw error;
   }
 }
@@ -88,7 +138,7 @@ function extractNextPageInfo(linkHeader) {
 
 async function fetchCustomerMetafields(customerId) {
   try {
-    const response = await shopifyApi.get(`/customers/${customerId}/metafields.json`);
+    const response = await fetchWithRetry(() => shopifyApi.get(`/customers/${customerId}/metafields.json`));
     return response.data.metafields;
   } catch (error) {
     console.warn(`   ⚠️  Failed to fetch metafields for customer ${customerId}:`, error.response?.data?.error || error.message);

@@ -14,7 +14,7 @@
     "batch-remove-expired-debug": "node scripts/batch-remove-expired-tag.js --debug"
   },
   "dependencies": {
-    "next": "^14.0.0",
+    "next": "14.2.35",
     "react": "^18.0.0",
     "react-dom": "^18.0.0",
     "@shopify/admin-api-client": "^1.0.0",
@@ -29,7 +29,12 @@
     "eslint-config-next": "^14.0.0",
     "typescript": "^5.0.0"
   },
-  "keywords": ["shopify", "api", "vercel", "nextjs"],
+  "keywords": [
+    "shopify",
+    "api",
+    "vercel",
+    "nextjs"
+  ],
   "author": "",
   "license": "MIT"
 }

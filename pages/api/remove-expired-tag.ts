@@ -50,7 +50,7 @@ export default async function handler(
 
   try {
     // 1. 顧客のメタフィールドを取得
-    const metafieldsUrl = `https://${shopDomain}/admin/api/2025-07/customers/${customerId}/metafields.json`;
+    const metafieldsUrl = `https://${shopDomain}/admin/api/2025-10/customers/${customerId}/metafields.json`;
     const metafieldsResponse = await axios.get<ShopifyMetafieldsResponse>(metafieldsUrl, { headers });
     const metafields = metafieldsResponse.data.metafields;
 
@@ -90,7 +90,7 @@ export default async function handler(
     }
 
     // 5. 顧客情報を取得
-    const customerUrl = `https://${shopDomain}/admin/api/2025-07/customers/${customerId}.json`;
+    const customerUrl = `https://${shopDomain}/admin/api/2025-10/customers/${customerId}.json`;
     const customerResponse = await axios.get<ShopifyCustomerResponse>(customerUrl, { headers });
     const customer = customerResponse.data.customer;
 

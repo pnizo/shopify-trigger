@@ -89,14 +89,14 @@ const DELAY_BETWEEN_BATCHES = 5000; // バッチ間の待機時間（ミリ秒�
 
 ### 使用するShopify API
 
-- `GET /admin/api/2025-07/customers.json`
+- `GET /admin/api/2025-10/customers.json`
   - アクティブ顧客の一覧を取得
   - パラメータ:
     - `limit`: 250（最大）
     - `state`: "enabled"
     - `fields`: 顧客情報フィールド
 
-- `GET /admin/api/2025-07/customers/{customerId}/metafields.json`
+- `GET /admin/api/2025-10/customers/{customerId}/metafields.json`
   - 顧客のメタフィールドを取得（デバッグモード時）
 
 ### ローカルAPI

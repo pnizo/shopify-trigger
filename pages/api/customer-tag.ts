@@ -31,7 +31,7 @@ export default async function handler(
     return res.status(500).json({ error: 'Shopify credentials not configured' });
   }
 
-  const apiUrl = `https://${shopDomain}/admin/api/2025-07/customers/${customerId}.json`;
+  const apiUrl = `https://${shopDomain}/admin/api/2025-10/customers/${customerId}.json`;
   const headers = {
     'X-Shopify-Access-Token': accessToken,
     'Content-Type': 'application/json',

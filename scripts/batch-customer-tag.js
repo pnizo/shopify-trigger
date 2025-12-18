@@ -16,7 +16,7 @@ if (!SHOPIFY_SHOP_DOMAIN || !SHOPIFY_ACCESS_TOKEN) {
 }
 
 const shopifyApi = axios.create({
-  baseURL: `https://${SHOPIFY_SHOP_DOMAIN}/admin/api/2025-07`,
+  baseURL: `https://${SHOPIFY_SHOP_DOMAIN}/admin/api/2025-10`,
   headers: {
     'X-Shopify-Access-Token': SHOPIFY_ACCESS_TOKEN,
     'Content-Type': 'application/json',

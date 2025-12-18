@@ -77,14 +77,21 @@ async function fetchAllCustomersWithFWJTag() {
       pageCount++;
       console.log(`   📄 Fetching page ${pageCount}...`);
 
-      const params = {
-        limit: 250,
-        state: 'enabled',
-        fields: 'id,email,first_name,last_name,state,phone,created_at,updated_at,tags,total_spent,orders_count'
-      };
+      let params;
 
       if (nextPageInfo) {
-        params.page_info = nextPageInfo;
+        // page_info使用時は他のパラメータを渡せない
+        params = {
+          limit: 250,
+          page_info: nextPageInfo
+        };
+      } else {
+        // 最初のリクエストのみフィルタパラメータを使用
+        params = {
+          limit: 250,
+          state: 'enabled',
+          fields: 'id,email,first_name,last_name,state,phone,created_at,updated_at,tags,total_spent,orders_count'
+        };
       }
 
       const response = await fetchWithRetry(() => shopifyApi.get('/customers.json', { params }));

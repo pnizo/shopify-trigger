@@ -7,8 +7,9 @@ const SHOPIFY_SHOP_DOMAIN = process.env.SHOPIFY_SHOP_DOMAIN;
 const SHOPIFY_ACCESS_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN;
 const API_BASE_URL = process.env.API_BASE_URL || 'http://localhost:3000';
 
-const BATCH_SIZE = 10;
-const DELAY_BETWEEN_BATCHES = 5000;
+const BATCH_SIZE = 2; // Shopifyのレート制限: 2 calls/second に対応
+const DELAY_BETWEEN_BATCHES = 1000;
+const DELAY_BETWEEN_REQUESTS = 600; // リクエスト間の遅延（ミリ秒）
 
 if (!SHOPIFY_SHOP_DOMAIN || !SHOPIFY_ACCESS_TOKEN) {
   console.error('❌ Error: SHOPIFY_SHOP_DOMAIN and SHOPIFY_ACCESS_TOKEN must be set in .env.local');
@@ -97,13 +98,16 @@ async function fetchAllActiveCustomers() {
       const response = await fetchWithRetry(() => shopifyApi.get('/customers.json', { params }));
       const customers = response.data.customers;
 
-      const activeCustomers = customers.filter(customer =>
-        customer.state === 'enabled'
-      );
+      // 'FWJカード会員' タグを持つ有効な顧客のみをフィルタリング
+      const activeCustomers = customers.filter(customer => {
+        if (customer.state !== 'enabled') return false;
+        const tags = customer.tags ? customer.tags.split(', ') : [];
+        return tags.includes('FWJカード会員');
+      });
 
       allCustomers = allCustomers.concat(activeCustomers);
 
-      console.log(`   ✅ Found ${activeCustomers.length} active customers on page ${pageCount}`);
+      console.log(`   ✅ Found ${activeCustomers.length} customers with 'FWJカード会員' tag on page ${pageCount}`);
 
       const linkHeader = response.headers.link;
       nextPageInfo = extractNextPageInfo(linkHeader);
@@ -112,7 +116,7 @@ async function fetchAllActiveCustomers() {
 
     } while (nextPageInfo);
 
-    console.log(`\n✅ Total active customers found: ${allCustomers.length}`);
+    console.log(`\n✅ Total customers with 'FWJカード会員' tag found: ${allCustomers.length}`);
     return allCustomers;
 
   } catch (error) {
@@ -174,7 +178,7 @@ function displayCustomerInfo(customer, metafields = []) {
   }
 }
 
-async function callCustomerTagApi(customerId, tag = 'batch-processed') {
+async function callCustomerTagApi(customerId, tag = 'batch-processed', retryCount = 0, maxRetries = 3) {
   try {
     const response = await localApi.post('/api/customer-tag', {
       customerId,
@@ -187,11 +191,31 @@ async function callCustomerTagApi(customerId, tag = 'batch-processed') {
       data: response.data
     };
   } catch (error) {
-    return {
+    const isRateLimitError = 
+      error.response?.status === 429 || 
+      error.response?.status === 500 && error.response?.data?.error?.toLowerCase?.().includes('exceeded');
+    
+    // レート制限エラーの場合、リトライ
+    if (isRateLimitError && retryCount < maxRetries) {
+      const retryDelay = 2000 * (retryCount + 1); // 2秒、4秒、6秒と増加
+      console.log(`      ⚠️  Rate limit for customer ${customerId}, retrying in ${retryDelay}ms (attempt ${retryCount + 1}/${maxRetries})...`);
+      await new Promise(resolve => setTimeout(resolve, retryDelay));
+      return callCustomerTagApi(customerId, tag, retryCount + 1, maxRetries);
+    }
+
+    // エラーの詳細情報を収集
+    const errorDetails = {
       success: false,
       customerId,
-      error: error.response?.data?.error || error.message
+      error: error.response?.data?.error || error.message,
+      errorType: error.code || error.name || 'Unknown',
+      httpStatus: error.response?.status,
+      errorMessage: error.message,
+      fullError: error.response?.data,
+      isRateLimitError
     };
+
+    return errorDetails;
   }
 }
 
@@ -208,24 +232,67 @@ async function processBatch(customers, batchIndex, tag, debug = false) {
     console.log(`\n🔄 Proceeding with API calls...`);
   }
 
-  const promises = customers.map(customer =>
-    callCustomerTagApi(customer.id, tag)
-  );
-
-  const results = await Promise.all(promises);
+  // レート制限を考慮して、リクエストを順次実行（遅延付き）
+  const results = [];
+  for (let i = 0; i < customers.length; i++) {
+    const customer = customers[i];
+    const result = await callCustomerTagApi(customer.id, tag);
+    results.push(result);
+    
+    // 最後のリクエスト以外は遅延
+    if (i < customers.length - 1) {
+      await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_REQUESTS));
+    }
+  }
 
   const successful = results.filter(r => r.success);
   const failed = results.filter(r => !r.success);
 
+  // エラータイプ別に分類
+  const rateLimitErrors = failed.filter(f => f.httpStatus === 429 || f.errorMessage?.toLowerCase().includes('rate limit'));
+  const connectionErrors = failed.filter(f => f.errorType === 'ECONNREFUSED' || f.errorType === 'ECONNRESET' || f.errorType === 'ETIMEDOUT');
+  const shopifyErrors = failed.filter(f => f.httpStatus >= 400 && f.httpStatus < 500 && f.httpStatus !== 429);
+  const serverErrors = failed.filter(f => f.httpStatus >= 500);
+  const otherErrors = failed.filter(f => 
+    !rateLimitErrors.includes(f) && 
+    !connectionErrors.includes(f) && 
+    !shopifyErrors.includes(f) && 
+    !serverErrors.includes(f)
+  );
+
   console.log(`   ✅ Successful: ${successful.length}`);
   if (failed.length > 0) {
     console.log(`   ❌ Failed: ${failed.length}`);
+    if (rateLimitErrors.length > 0) {
+      console.log(`      🚫 Rate Limit Errors: ${rateLimitErrors.length}`);
+    }
+    if (connectionErrors.length > 0) {
+      console.log(`      🔌 Connection Errors: ${connectionErrors.length}`);
+    }
+    if (shopifyErrors.length > 0) {
+      console.log(`      📛 Client Errors (4xx): ${shopifyErrors.length}`);
+    }
+    if (serverErrors.length > 0) {
+      console.log(`      💥 Server Errors (5xx): ${serverErrors.length}`);
+    }
+    if (otherErrors.length > 0) {
+      console.log(`      ❓ Other Errors: ${otherErrors.length}`);
+    }
+    
+    // 詳細なエラー情報を表示
     failed.forEach(failure => {
-      console.log(`      Customer ${failure.customerId}: ${failure.error}`);
+      const statusInfo = failure.httpStatus ? ` [HTTP ${failure.httpStatus}]` : '';
+      const typeInfo = failure.errorType ? ` (${failure.errorType})` : '';
+      console.log(`      Customer ${failure.customerId}${statusInfo}${typeInfo}: ${failure.error}`);
+      
+      // より詳細な情報があれば表示
+      if (failure.fullError && typeof failure.fullError === 'object' && Object.keys(failure.fullError).length > 1) {
+        console.log(`        Detail: ${JSON.stringify(failure.fullError)}`);
+      }
     });
   }
 
-  return { successful, failed };
+  return { successful, failed, rateLimitErrors, connectionErrors, shopifyErrors, serverErrors, otherErrors };
 }
 
 async function main() {
@@ -237,13 +304,15 @@ async function main() {
   console.log(`🏪 Shopify Store: ${SHOPIFY_SHOP_DOMAIN}`);
   console.log(`📦 Batch Size: ${BATCH_SIZE}`);
   console.log(`⏱️  Delay Between Batches: ${DELAY_BETWEEN_BATCHES}ms`);
-  console.log(`🐛 Debug Mode: ${debugMode ? 'ON' : 'OFF'}\n`);
+  console.log(`⏱️  Delay Between Requests: ${DELAY_BETWEEN_REQUESTS}ms`);
+  console.log(`🐛 Debug Mode: ${debugMode ? 'ON' : 'OFF'}`);
+  console.log(`ℹ️  Note: Shopify rate limit is 2 calls/second\n`);
 
   try {
     const customers = await fetchAllActiveCustomers();
 
     if (customers.length === 0) {
-      console.log('ℹ️  No active customers found.');
+      console.log('ℹ️  No customers with \'FWJカード会員\' tag found.');
       return;
     }
 
@@ -256,6 +325,11 @@ async function main() {
 
     let totalSuccessful = 0;
     let totalFailed = 0;
+    let totalRateLimitErrors = 0;
+    let totalConnectionErrors = 0;
+    let totalShopifyErrors = 0;
+    let totalServerErrors = 0;
+    let totalOtherErrors = 0;
     const allFailures = [];
 
     for (let i = 0; i < batches.length; i++) {
@@ -264,6 +338,11 @@ async function main() {
 
       totalSuccessful += results.successful.length;
       totalFailed += results.failed.length;
+      totalRateLimitErrors += results.rateLimitErrors.length;
+      totalConnectionErrors += results.connectionErrors.length;
+      totalShopifyErrors += results.shopifyErrors.length;
+      totalServerErrors += results.serverErrors.length;
+      totalOtherErrors += results.otherErrors.length;
       allFailures.push(...results.failed);
 
       if (i < batches.length - 1) {
@@ -277,11 +356,41 @@ async function main() {
     console.log(`❌ Total Failed: ${totalFailed}`);
     console.log(`📊 Success Rate: ${((totalSuccessful / customers.length) * 100).toFixed(1)}%`);
 
+    if (totalFailed > 0) {
+      console.log(`\n📊 ERROR BREAKDOWN:`);
+      if (totalRateLimitErrors > 0) {
+        console.log(`   🚫 Rate Limit Errors: ${totalRateLimitErrors} (${((totalRateLimitErrors / totalFailed) * 100).toFixed(1)}%)`);
+      }
+      if (totalConnectionErrors > 0) {
+        console.log(`   🔌 Connection Errors: ${totalConnectionErrors} (${((totalConnectionErrors / totalFailed) * 100).toFixed(1)}%)`);
+      }
+      if (totalShopifyErrors > 0) {
+        console.log(`   📛 Client Errors (4xx): ${totalShopifyErrors} (${((totalShopifyErrors / totalFailed) * 100).toFixed(1)}%)`);
+      }
+      if (totalServerErrors > 0) {
+        console.log(`   💥 Server Errors (5xx): ${totalServerErrors} (${((totalServerErrors / totalFailed) * 100).toFixed(1)}%)`);
+      }
+      if (totalOtherErrors > 0) {
+        console.log(`   ❓ Other Errors: ${totalOtherErrors} (${((totalOtherErrors / totalFailed) * 100).toFixed(1)}%)`);
+      }
+    }
+
     if (allFailures.length > 0) {
       console.log(`\n❌ FAILED CUSTOMERS:`);
       allFailures.forEach(failure => {
-        console.log(`   Customer ${failure.customerId}: ${failure.error}`);
+        const statusInfo = failure.httpStatus ? ` [HTTP ${failure.httpStatus}]` : '';
+        const typeInfo = failure.errorType ? ` (${failure.errorType})` : '';
+        console.log(`   Customer ${failure.customerId}${statusInfo}${typeInfo}: ${failure.error}`);
       });
+      
+      // レート制限エラーが多い場合の推奨事項
+      if (totalRateLimitErrors > totalFailed * 0.3) {
+        console.log(`\n💡 RECOMMENDATION:`);
+        console.log(`   High rate limit errors detected. Consider:`);
+        console.log(`   - Increasing DELAY_BETWEEN_BATCHES (current: ${DELAY_BETWEEN_BATCHES}ms)`);
+        console.log(`   - Reducing BATCH_SIZE (current: ${BATCH_SIZE})`);
+        console.log(`   - Checking Shopify API rate limits`);
+      }
     }
 
   } catch (error) {

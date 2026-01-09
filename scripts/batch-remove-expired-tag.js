@@ -7,8 +7,9 @@ const SHOPIFY_SHOP_DOMAIN = process.env.SHOPIFY_SHOP_DOMAIN;
 const SHOPIFY_ACCESS_TOKEN = process.env.SHOPIFY_ACCESS_TOKEN;
 const API_BASE_URL = process.env.API_BASE_URL || 'http://localhost:3000';
 
-const BATCH_SIZE = 10;
-const DELAY_BETWEEN_BATCHES = 5000;
+const BATCH_SIZE = 2; // Shopifyのレート制限: 2 calls/second に対応
+const DELAY_BETWEEN_BATCHES = 1000;
+const DELAY_BETWEEN_REQUESTS = 600; // リクエスト間の遅延（ミリ秒）
 
 if (!SHOPIFY_SHOP_DOMAIN || !SHOPIFY_ACCESS_TOKEN) {
   console.error('❌ Error: SHOPIFY_SHOP_DOMAIN and SHOPIFY_ACCESS_TOKEN must be set in .env.local');
@@ -200,7 +201,7 @@ function displayCustomerInfo(customer, metafields = []) {
   }
 }
 
-async function callRemoveExpiredTagApi(customerId) {
+async function callRemoveExpiredTagApi(customerId, retryCount = 0, maxRetries = 3) {
   try {
     const response = await localApi.post('/api/remove-expired-tag', {
       customerId
@@ -212,11 +213,26 @@ async function callRemoveExpiredTagApi(customerId) {
       data: response.data
     };
   } catch (error) {
+    const isRateLimitError = 
+      error.response?.status === 429 || 
+      error.response?.status === 500 && error.response?.data?.error?.toLowerCase?.().includes('exceeded');
+    
+    // レート制限エラーの場合、リトライ
+    if (isRateLimitError && retryCount < maxRetries) {
+      const retryDelay = 2000 * (retryCount + 1); // 2秒、4秒、6秒と増加
+      console.log(`      ⚠️  Rate limit for customer ${customerId}, retrying in ${retryDelay}ms (attempt ${retryCount + 1}/${maxRetries})...`);
+      await new Promise(resolve => setTimeout(resolve, retryDelay));
+      return callRemoveExpiredTagApi(customerId, retryCount + 1, maxRetries);
+    }
+
     return {
       success: false,
       customerId,
       error: error.response?.data?.error || error.message,
-      data: error.response?.data
+      data: error.response?.data,
+      httpStatus: error.response?.status,
+      errorType: error.code || error.name || 'Unknown',
+      isRateLimitError
     };
   }
 }
@@ -234,11 +250,18 @@ async function processBatch(customers, batchIndex, debug = false) {
     console.log(`\n🔄 Proceeding with API calls...`);
   }
 
-  const promises = customers.map(customer =>
-    callRemoveExpiredTagApi(customer.id)
-  );
-
-  const results = await Promise.all(promises);
+  // レート制限を考慮して、リクエストを順次実行（遅延付き）
+  const results = [];
+  for (let i = 0; i < customers.length; i++) {
+    const customer = customers[i];
+    const result = await callRemoveExpiredTagApi(customer.id);
+    results.push(result);
+    
+    // 最後のリクエスト以外は遅延
+    if (i < customers.length - 1) {
+      await new Promise(resolve => setTimeout(resolve, DELAY_BETWEEN_REQUESTS));
+    }
+  }
 
   const tagRemoved = results.filter(r => r.success && r.data?.tagRemoved === true);
   const notExpired = results.filter(r => !r.success && r.data?.message?.includes('has not passed yet'));
@@ -274,8 +297,10 @@ async function main() {
   console.log(`🏪 Shopify Store: ${SHOPIFY_SHOP_DOMAIN}`);
   console.log(`📦 Batch Size: ${BATCH_SIZE}`);
   console.log(`⏱️  Delay Between Batches: ${DELAY_BETWEEN_BATCHES}ms`);
+  console.log(`⏱️  Delay Between Requests: ${DELAY_BETWEEN_REQUESTS}ms`);
   console.log(`🐛 Debug Mode: ${debugMode ? 'ON' : 'OFF'}`);
-  console.log(`🔍 Verbose Mode: ${verboseMode ? 'ON' : 'OFF'}\n`);
+  console.log(`🔍 Verbose Mode: ${verboseMode ? 'ON' : 'OFF'}`);
+  console.log(`ℹ️  Note: Shopify rate limit is 2 calls/second\n`);
 
   try {
     const customers = await fetchAllCustomersWithFWJTag();

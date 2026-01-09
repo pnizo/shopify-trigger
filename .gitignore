@@ -37,4 +37,4 @@ settings.local.json
 .mcp*
 
 # log
-firebase-debug.log
+*.log*

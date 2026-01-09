@@ -35,3 +35,6 @@ next-env.d.ts
 # claude
 settings.local.json
 .mcp*
+
+# log
+firebase-debug.log
